@@ -9,6 +9,7 @@
   <properties>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
+    <version.awaitility>4.2.0</version.awaitility>
     <version.commons-exec>1.4.0</version.commons-exec>
     <version.junit-jupiter-api>5.10.2</version.junit-jupiter-api>
     <version.maven-compiler-plugin>3.12.1</version.maven-compiler-plugin>
@@ -33,6 +34,12 @@
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
       <version>${version.junit-jupiter-api}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <version>${version.awaitility}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

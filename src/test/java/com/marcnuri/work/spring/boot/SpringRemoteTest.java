@@ -5,12 +5,14 @@ import org.apache.commons.exec.DefaultExecuteResultHandler;
 import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.ExecuteWatchdog;
 import org.apache.commons.exec.OS;
+import org.apache.commons.exec.PumpStreamHandler;
 import org.apache.maven.shared.invoker.DefaultInvocationRequest;
 import org.apache.maven.shared.invoker.DefaultInvoker;
 import org.apache.maven.shared.invoker.InvocationRequest;
 import org.apache.maven.shared.invoker.Invoker;
 import org.apache.maven.shared.invoker.MavenInvocationException;
 import org.apache.maven.shared.invoker.PrintStreamHandler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,24 +24,35 @@ import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.apache.commons.io.FileUtils.copyDirectory;
+import static org.awaitility.Awaitility.await;
 
 class SpringRemoteTest {
 
   @TempDir
   Path tempDir;
-  Path app;
+  private Set<ExecuteWatchdog> procs;
+  private Path app;
+
 
   @BeforeEach
-  void setup() throws IOException {
+  void setUp() throws IOException {
+    procs = new HashSet<>();
     copyDirectory(new File(".mvn"), tempDir.resolve(".mvn").toFile());
     Files.copy(new File("mvnw.cmd").toPath(), tempDir.resolve("mvnw.cmd"));
     Files.copy(new File("mvnw").toPath(), tempDir.resolve("mvnw"));
     final var resources = Files.createDirectories(tempDir.resolve("src").resolve("main").resolve("resources"));
     Files.writeString(resources.resolve("application.properties"), "spring.devtools.remote.secret=Falken");
     app = Files.createDirectories(tempDir.resolve("src").resolve("main").resolve("java").resolve("app"));
+  }
+
+  @AfterEach
+  void tearDown() {
+    procs.forEach(ExecuteWatchdog::destroyProcess);
   }
 
   @Test
@@ -57,40 +70,32 @@ class SpringRemoteTest {
       tempDir.resolve("remote-app.jar"));
     final var execFactory = DefaultExecutor.builder().setWorkingDirectory(tempDir.toFile());
     // Extract jar to easily get the complete ClassPath
-    final var extractJarCmd = CommandLine.parse("jar xf remote-app.jar BOOT-INF/lib");
-    execFactory.get().execute(extractJarCmd);
+    run("jar", "xf", "remote-app.jar", "BOOT-INF/lib").handler().waitFor(Duration.ofSeconds(10));
     // Run the application
-    final var remoteAppHandler = new DefaultExecuteResultHandler();
-    final var remoteAppWatchDog = ExecuteWatchdog.builder().setTimeout(Duration.ofSeconds(100)).get();
-    final var remoteAppCmd = CommandLine.parse("java -jar remote-app.jar");
-    final var executor = execFactory.get();
-    executor.setWatchdog(remoteAppWatchDog);
-    executor.execute(remoteAppCmd, remoteAppHandler);
+    final var remoteApp = run("java", "-jar", "remote-app.jar");
+    await().atMost(Duration.ofSeconds(5))
+      .until(() -> remoteApp.out.toString().contains("Started Application in "));
     // Run Spring Remote Dev
-    final var springRemoteDevHandler = new DefaultExecuteResultHandler();
-    final var springRemoteDevWatchDog = ExecuteWatchdog.builder().setTimeout(Duration.ofSeconds(100)).get();
-    final var springRemoteDevCmd = new CommandLine("java");
-    springRemoteDevCmd.addArgument("-cp");
-    springRemoteDevCmd.addArgument(
+    final var springRemoteDev = run("java", "-cp",
       STR."\{tempDir.resolve("BOOT-INF").resolve("lib")}\{File.separator}*\{File.pathSeparator}" +
-        STR."\{tempDir.resolve("target").resolve("classes")}"
+        STR."\{tempDir.resolve("target").resolve("classes")}",
+      "org.springframework.boot.devtools.RemoteSpringApplication",
+      "http://localhost:8080",
+      "--trace"
     );
-    springRemoteDevCmd.addArgument("org.springframework.boot.devtools.RemoteSpringApplication");
-    springRemoteDevCmd.addArgument("http://localhost:8080");
-    springRemoteDevCmd.addArgument("--trace");
-    final var springRemoteDevExecutor = execFactory.get();
-    springRemoteDevExecutor.setWatchdog(springRemoteDevWatchDog);
-    springRemoteDevExecutor.execute(springRemoteDevCmd, springRemoteDevHandler);
-
-
+    await().atMost(Duration.ofSeconds(5))
+      .until(() -> springRemoteDev.out.toString().contains("LiveReload server is running on port "));
+    // Modify the application and recompile
     Files.writeString(app.resolve("Application.java"), application("Greetings Professor Falken!!!"));
-    final var result2 = maven(ir);
-
-    System.out.println(result);
-    springRemoteDevHandler.waitFor(Duration.ofSeconds(10));
-    remoteAppHandler.waitFor(Duration.ofSeconds(10));
-    springRemoteDevWatchDog.destroyProcess();
-    remoteAppWatchDog.destroyProcess();
+    maven(ir);
+    // Verify restart
+    await().atMost(Duration.ofSeconds(5))
+      .until(() -> remoteApp.out.toString()
+        .contains("[  restartedMain] app.Application                          : Started Application in "));
+    await().atMost(Duration.ofSeconds(5))
+      .until(() -> springRemoteDev.out.toString().contains("Uploading 2 class path changes"));
+    await().atMost(Duration.ofSeconds(5))
+      .until(() -> springRemoteDev.out.toString().contains("Remote server has changed, triggering LiveReload"));
   }
 
   private static String maven(InvocationRequest ir) {
@@ -111,6 +116,25 @@ class SpringRemoteTest {
     } catch (IOException | MavenInvocationException e) {
       throw new RuntimeException(e);
     }
+  }
+
+  private Run run(String... args) throws IOException {
+    final var watchDog = ExecuteWatchdog.builder().setTimeout(Duration.ofHours(1)).get();
+    procs.add(watchDog);
+    final var commandLine = new CommandLine(args[0]);
+    for (int i = 1; i < args.length; i++) {
+      commandLine.addArgument(args[i]);
+    }
+    final var executor = DefaultExecutor.builder().setWorkingDirectory(tempDir.toFile()).get();
+    executor.setWatchdog(watchDog);
+    final var out = new ByteArrayOutputStream();
+    executor.setStreamHandler(new PumpStreamHandler(out));
+    final var handler = new DefaultExecuteResultHandler();
+    executor.execute(commandLine, handler);
+    return new Run(handler, out);
+  }
+
+  record Run(DefaultExecuteResultHandler handler, ByteArrayOutputStream out) {
   }
 
   private static String pom(String springBootVersion) {
@@ -180,7 +204,6 @@ class SpringRemoteTest {
           }
         }
       }
-
       """;
 
   }
