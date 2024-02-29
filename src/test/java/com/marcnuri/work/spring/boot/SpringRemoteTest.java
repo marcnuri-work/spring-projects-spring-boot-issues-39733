@@ -12,8 +12,12 @@ import org.apache.maven.shared.invoker.InvocationRequest;
 import org.apache.maven.shared.invoker.Invoker;
 import org.apache.maven.shared.invoker.MavenInvocationException;
 import org.apache.maven.shared.invoker.PrintStreamHandler;
+import org.awaitility.core.ConditionEvaluationListener;
+import org.awaitility.core.EvaluatedCondition;
+import org.awaitility.core.TimeoutEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -28,9 +32,11 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static org.apache.commons.io.FileUtils.copyDirectory;
 import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.AssertionFailureBuilder.assertionFailure;
 
 class SpringRemoteTest {
 
@@ -55,9 +61,10 @@ class SpringRemoteTest {
     procs.forEach(ExecuteWatchdog::destroyProcess);
   }
 
-  @ParameterizedTest(name = "{index}: Spring Boot {0}")
+  @DisplayName("Live Reload")
+  @ParameterizedTest(name = "{index}: Live Reload with Spring Boot {0}")
   @ValueSource(strings = {"2.7.11", "2.7.12"})
-  void test(String springBootVersion) throws Exception {
+  void liveReload(String springBootVersion) throws Exception {
     // Bootstrap Project
     Files.writeString(tempDir.resolve("pom.xml"), pom(springBootVersion));
     Files.writeString(app.resolve("Application.java"), application("Greetings Professor Falken"));
@@ -97,12 +104,28 @@ class SpringRemoteTest {
 
     // Verify restart
     await().atMost(Duration.ofSeconds(5))
+      .conditionEvaluationListener(onTimeout(noOp -> assertionFailure()
+        .message(STR."Expected application to restart but got:\{remoteApp.out.toString()}").buildAndThrow()))
       .until(() -> remoteApp.out.toString()
         .contains("[  restartedMain] app.Application                          : Started Application in "));
     await().atMost(Duration.ofSeconds(5))
       .until(() -> springRemoteDev.out.toString().contains("Uploading 2 class path changes"));
     await().atMost(Duration.ofSeconds(5))
       .until(() -> springRemoteDev.out.toString().contains("Remote server has changed, triggering LiveReload"));
+  }
+
+  private <T> ConditionEvaluationListener<T> onTimeout(Consumer<TimeoutEvent> onTimeout) {
+    return new ConditionEvaluationListener<>() {
+      @Override
+      public void conditionEvaluated(EvaluatedCondition condition) {
+        // NO-OP
+      }
+
+      @Override
+      public void onTimeout(TimeoutEvent timeoutEvent) {
+        onTimeout.accept(timeoutEvent);
+      }
+    };
   }
 
   private static String maven(InvocationRequest ir) {
@@ -212,7 +235,6 @@ class SpringRemoteTest {
         }
       }
       """;
-
   }
 
 }

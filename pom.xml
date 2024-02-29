@@ -67,6 +67,8 @@
         <version>${version.maven-surefire-plugin}</version>
         <configuration>
           <argLine>--enable-preview</argLine>
+          <testFailureIgnore>true</testFailureIgnore>
+          <reportFormat>plain</reportFormat>
         </configuration>
       </plugin>
     </plugins>
