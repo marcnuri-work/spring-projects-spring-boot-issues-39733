@@ -14,8 +14,9 @@ import org.apache.maven.shared.invoker.MavenInvocationException;
 import org.apache.maven.shared.invoker.PrintStreamHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -38,7 +39,6 @@ class SpringRemoteTest {
   private Set<ExecuteWatchdog> procs;
   private Path app;
 
-
   @BeforeEach
   void setUp() throws IOException {
     procs = new HashSet<>();
@@ -55,26 +55,31 @@ class SpringRemoteTest {
     procs.forEach(ExecuteWatchdog::destroyProcess);
   }
 
-  @Test
-  void test() throws Exception {
-    final var springBootVersion = "2.7.11";
+  @ParameterizedTest(name = "{index}: Spring Boot {0}")
+  @ValueSource(strings = {"2.7.11", "2.7.12"})
+  void test(String springBootVersion) throws Exception {
+    // Bootstrap Project
     Files.writeString(tempDir.resolve("pom.xml"), pom(springBootVersion));
     Files.writeString(app.resolve("Application.java"), application("Greetings Professor Falken"));
+
     // Initial compilation
-    final InvocationRequest ir = new DefaultInvocationRequest();
-    ir.setBaseDirectory(tempDir.toFile());
-    ir.setGoals(List.of("package"));
-    final var result = maven(ir);
+    final var mvnPackage = new DefaultInvocationRequest()
+      .setBaseDirectory(tempDir.toFile())
+      .setGoals(List.of("package"));
+    maven(mvnPackage);
+
     // Copy packaged application so that it can be overridden in subsequent package
-    Files.copy(tempDir.resolve("target").resolve("spring-boot-remote-" + springBootVersion + ".jar"),
+    Files.copy(tempDir.resolve("target").resolve(STR."spring-boot-remote-\{springBootVersion}.jar"),
       tempDir.resolve("remote-app.jar"));
-    final var execFactory = DefaultExecutor.builder().setWorkingDirectory(tempDir.toFile());
+
     // Extract jar to easily get the complete ClassPath
     run("jar", "xf", "remote-app.jar", "BOOT-INF/lib").handler().waitFor(Duration.ofSeconds(10));
+
     // Run the application
     final var remoteApp = run("java", "-jar", "remote-app.jar");
     await().atMost(Duration.ofSeconds(5))
       .until(() -> remoteApp.out.toString().contains("Started Application in "));
+
     // Run Spring Remote Dev
     final var springRemoteDev = run("java", "-cp",
       STR."\{tempDir.resolve("BOOT-INF").resolve("lib")}\{File.separator}*\{File.pathSeparator}" +
@@ -85,9 +90,11 @@ class SpringRemoteTest {
     );
     await().atMost(Duration.ofSeconds(5))
       .until(() -> springRemoteDev.out.toString().contains("LiveReload server is running on port "));
+
     // Modify the application and recompile
     Files.writeString(app.resolve("Application.java"), application("Greetings Professor Falken!!!"));
-    maven(ir);
+    maven(mvnPackage);
+
     // Verify restart
     await().atMost(Duration.ofSeconds(5))
       .until(() -> remoteApp.out.toString()
