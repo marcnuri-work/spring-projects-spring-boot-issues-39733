@@ -63,7 +63,7 @@ class SpringRemoteTest {
 
   @DisplayName("Live Reload")
   @ParameterizedTest(name = "{index}: Live Reload with Spring Boot {0}")
-  @ValueSource(strings = {"2.7.11", "2.7.12"})
+  @ValueSource(strings = {"2.7.11", "2.7.12", "3.2.0"})
   void liveReload(String springBootVersion) throws Exception {
     // Bootstrap Project
     Files.writeString(tempDir.resolve("pom.xml"), pom(springBootVersion));
